@@ -7,6 +7,8 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import io
 import os
+import requests
+import json
 
 # Page configuration
 st.set_page_config(
@@ -126,7 +128,7 @@ def fix_data_types(df):
         try:
             # Remove currency symbols and commas if it's text
             if df_fixed['Amount'].dtype == 'object':
-                df_fixed['Amount'] = df_fixed['Amount'].astype(str)
+                df_fixed['Amount'] = df_fixed['Amount'].astype('string')
                 df_fixed['Amount'] = df_fixed['Amount'].str.replace('[$,€£¥]', '', regex=True)
                 df_fixed['Amount'] = df_fixed['Amount'].str.replace('[(),]', '', regex=True)
             
@@ -172,8 +174,8 @@ def add_missing_columns(df):
     text_columns = ['Company Type', 'Client name', 'Account Class', 'WTB Account', 'Ship To City', 'Ship To State']
     for col in text_columns:
         if col in df_with_defaults.columns:
-            # Convert to string
-            df_with_defaults[col] = df_with_defaults[col].astype(str)
+            # Convert to string and ensure proper data type
+            df_with_defaults[col] = df_with_defaults[col].astype('string')
             
             # Handle various types of missing/blank values
             df_with_defaults[col] = df_with_defaults[col].replace({
@@ -187,8 +189,8 @@ def add_missing_columns(df):
                 '---': 'Unknown'
             }).fillna('Unknown')
             
-            # Clean up whitespace
-            df_with_defaults[col] = df_with_defaults[col].str.strip()
+            # Clean up whitespace and ensure string type
+            df_with_defaults[col] = df_with_defaults[col].str.strip().astype('string')
     
     return df_with_defaults
 
@@ -229,10 +231,10 @@ def display_data_info(df):
     # Show column information
     with st.expander("📋 Column Information"):
         col_info = pd.DataFrame({
-            'Column': df.columns,
-            'Data Type': df.dtypes,
-            'Non-Null Count': df.count(),
-            'Unique Values': [df[col].nunique() for col in df.columns],
+            'Column': df.columns.astype(str),
+            'Data Type': df.dtypes.astype(str),
+            'Non-Null Count': df.count().astype(int),
+            'Unique Values': [int(df[col].nunique()) for col in df.columns],
             'Sample Value': [str(df[col].iloc[0]) if len(df) > 0 else 'N/A' for col in df.columns]
         })
         st.dataframe(col_info, use_container_width=True)
@@ -382,7 +384,7 @@ def calculate_metrics(df):
     # Profitability Analysis (if Account mapping is available)
     if 'Account mapping' in df.columns:
         # Convert to string and standardize
-        df['Account mapping'] = df['Account mapping'].astype(str).str.upper().str.strip()
+        df['Account mapping'] = df['Account mapping'].astype('string').str.upper().str.strip()
         
         # Calculate Sales vs COGS - Present sales as positive
         sales_mask = df['Account mapping'].str.contains('SALES|REVENUE|INCOME', case=False, na=False)
@@ -662,7 +664,7 @@ def main():
     # Company/Entity filter (if available)
     if 'Company' in df.columns and len(df['Company'].unique()) > 1:
         # Convert to string and handle NaN values
-        df['Company'] = df['Company'].astype(str).fillna('Unknown')
+        df['Company'] = df['Company'].astype('string').fillna('Unknown')
         company_options = sorted(df['Company'].unique())
         selected_companies = st.sidebar.multiselect(
             "Select Companies/Entities",
@@ -675,7 +677,7 @@ def main():
     
     # Account Mapping filter (if available) 
     if 'Account mapping' in df.columns and len(df['Account mapping'].unique()) > 1:
-        df['Account mapping'] = df['Account mapping'].astype(str).fillna('Unknown')
+        df['Account mapping'] = df['Account mapping'].astype('string').fillna('Unknown')
         mapping_options = sorted(df['Account mapping'].unique())
         selected_mappings = st.sidebar.multiselect(
             "Select Account Mappings",
@@ -689,7 +691,7 @@ def main():
     # Client filter (if available)
     if 'Client name' in df.columns and len(df['Client name'].unique()) > 1:
         # Convert to string and handle NaN values
-        df['Client name'] = df['Client name'].astype(str).fillna('Unknown')
+        df['Client name'] = df['Client name'].astype('string').fillna('Unknown')
         client_options = sorted(df['Client name'].unique())
         selected_clients = st.sidebar.multiselect(
             "Select Clients",
@@ -703,7 +705,7 @@ def main():
     # Account Class filter (if available)
     if 'Account Class' in df.columns and len(df['Account Class'].unique()) > 1:
         # Convert to string and handle NaN values
-        df['Account Class'] = df['Account Class'].astype(str).fillna('Unknown')
+        df['Account Class'] = df['Account Class'].astype('string').fillna('Unknown')
         account_options = sorted(df['Account Class'].unique())
         selected_accounts = st.sidebar.multiselect(
             "Select Account Classes",
@@ -939,7 +941,7 @@ def main():
                     monthly_profit = []
                     for month in sorted(df_filtered['Month'].unique()):
                         month_data = df_filtered[df_filtered['Month'] == month].copy()
-                        month_data['Account mapping'] = month_data['Account mapping'].astype(str).str.upper()
+                        month_data['Account mapping'] = month_data['Account mapping'].astype('string').str.upper()
                         
                         sales_mask = month_data['Account mapping'].str.contains('SALES|REVENUE|INCOME', case=False, na=False)
                         cogs_mask = month_data['Account mapping'].str.contains('COGS|COST|EXPENSE', case=False, na=False)
@@ -999,7 +1001,67 @@ def main():
     with tab4:
         st.header("Geographic Revenue Analysis")
         
-        # Check if geographic data is available
+        # Check if zip code data is available for mapping
+        if 'Ship Zip' in df_filtered.columns:
+            st.subheader("🗺️ Interactive Map View")
+            
+            # Option to enable map visualization
+            enable_map = st.checkbox("Enable Interactive Map (requires internet connection)", 
+                                   help="This will look up geographic coordinates for zip codes using an external API")
+            
+            if enable_map:
+                with st.spinner("Looking up zip code coordinates..."):
+                    df_with_coords = get_zip_data_with_coordinates(df_filtered)
+                
+                # Create and display the map
+                map_fig = create_map_visualization(df_with_coords)
+                if map_fig:
+                    st.plotly_chart(map_fig, use_container_width=True)
+                
+                # Show zip code summary table
+                st.subheader("📊 Zip Code Summary")
+                if 'geo_city' in df_with_coords.columns and 'geo_state' in df_with_coords.columns:
+                    zip_revenue = df_with_coords.groupby('Ship Zip').agg({
+                        'Amount': ['sum', 'count', 'mean'],
+                        'geo_city': 'first',
+                        'geo_state': 'first'
+                    }).round(2)
+                    zip_revenue.columns = ['Total Revenue', 'Transactions', 'Avg Amount', 'City', 'State']
+                else:
+                    zip_revenue = df_with_coords.groupby('Ship Zip').agg({
+                        'Amount': ['sum', 'count', 'mean']
+                    }).round(2)
+                    zip_revenue.columns = ['Total Revenue', 'Transactions', 'Avg Amount']
+                
+                zip_revenue = zip_revenue.sort_values('Total Revenue', ascending=False).head(20)
+                
+                st.dataframe(zip_revenue.style.format({
+                    'Total Revenue': '${:,.2f}',
+                    'Avg Amount': '${:,.2f}'
+                }), use_container_width=True)
+            
+            else:
+                # Show basic zip code analysis without coordinates
+                st.subheader("📊 Revenue by Zip Code")
+                zip_revenue = df_filtered.groupby('Ship Zip')['Amount'].agg(['sum', 'count', 'mean']).round(2)
+                zip_revenue.columns = ['Total Revenue', 'Transactions', 'Avg Amount']
+                zip_revenue = zip_revenue.sort_values('Total Revenue', ascending=False).head(20)
+                
+                st.dataframe(zip_revenue.style.format({
+                    'Total Revenue': '${:,.2f}',
+                    'Avg Amount': '${:,.2f}'
+                }), use_container_width=True)
+                
+                # Basic zip code bar chart
+                fig_zip = px.bar(
+                    x=zip_revenue.index[:10],
+                    y=zip_revenue['Total Revenue'][:10],
+                    title="Top 10 Zip Codes by Revenue",
+                    labels={'x': 'Zip Code', 'y': 'Total Revenue'}
+                )
+                st.plotly_chart(fig_zip, use_container_width=True)
+        
+        # Check if state/city data is available
         if 'Ship To State' in df_filtered.columns and 'Ship To City' in df_filtered.columns:
             # Create geographic chart
             geo_data = df_filtered.groupby(['Ship To State', 'Ship To City'])['Amount'].sum().reset_index()
@@ -1037,8 +1099,10 @@ def main():
                     )
                     fig_cities.update_layout(xaxis_tickangle=-45)
                     st.plotly_chart(fig_cities, use_container_width=True)
-        else:
-            st.info("Geographic data not available. Add 'Ship To State' and 'Ship To City' columns for geographic analysis.")
+        
+        # Show message if no geographic data is available
+        if not any(col in df_filtered.columns for col in ['Ship Zip', 'Ship To State', 'Ship To City']):
+            st.info("Geographic data not available. Add 'Ship Zip', 'Ship To State', and/or 'Ship To City' columns for geographic analysis.")
     with tab5:
         st.header("Client Performance Analysis")
         
@@ -1058,7 +1122,7 @@ def main():
                 st.subheader("Client Profitability Analysis")
                 
                 client_profit = df_filtered.copy()
-                client_profit['Account mapping'] = client_profit['Account mapping'].astype(str).str.upper()
+                client_profit['Account mapping'] = client_profit['Account mapping'].astype('string').str.upper()
                 
                 # Categorize sales vs cogs by client
                 sales_mask = client_profit['Account mapping'].str.contains('SALES|REVENUE|INCOME', case=False, na=False)
@@ -1212,7 +1276,7 @@ def create_profitability_summary(df):
         return pd.DataFrame()
     
     df_profit = df.copy()
-    df_profit['Account mapping'] = df_profit['Account mapping'].astype(str).str.upper()
+    df_profit['Account mapping'] = df_profit['Account mapping'].astype('string').str.upper()
     
     # Monthly profitability
     monthly_summary = []
@@ -1275,6 +1339,127 @@ def create_profitability_summary(df):
                 summary += f"- Date Range: {df_filtered['Date'].min().strftime('%Y-%m-%d')} to {df_filtered['Date'].max().strftime('%Y-%m-%d')}"
             
             st.markdown(summary)
+
+def get_zip_coordinates(zip_code):
+    """Get latitude and longitude for a given zip code using a free API"""
+    try:
+        # Clean up zip code
+        zip_code = str(zip_code).strip().split('-')[0]  # Remove +4 extension if present
+        if len(zip_code) != 5 or not zip_code.isdigit():
+            return None, None, None, None
+        
+        # Use Zippopotam.us API (free, no API key required)
+        url = f"http://api.zippopotam.us/us/{zip_code}"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Extract information
+            city = data.get('place name', 'Unknown')
+            state = data.get('state abbreviation', 'Unknown')
+            lat = float(data['places'][0]['latitude'])
+            lon = float(data['places'][0]['longitude'])
+            
+            return lat, lon, city, state
+        else:
+            return None, None, None, None
+            
+    except Exception as e:
+        return None, None, None, None
+
+@st.cache_data
+def get_zip_data_with_coordinates(df):
+    """Add geographic coordinates to zip code data with caching"""
+    if 'Ship Zip' not in df.columns:
+        return df
+    
+    df_geo = df.copy()
+    
+    # Get unique zip codes to minimize API calls
+    unique_zips = df_geo['Ship Zip'].unique()
+    zip_coords = {}
+    
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+    
+    for i, zip_code in enumerate(unique_zips):
+        progress_bar.progress((i + 1) / len(unique_zips))
+        progress_text.text(f"Looking up zip code {zip_code}... ({i + 1}/{len(unique_zips)})")
+        
+        lat, lon, city, state = get_zip_coordinates(zip_code)
+        zip_coords[zip_code] = {
+            'latitude': lat,
+            'longitude': lon,
+            'geo_city': city,
+            'geo_state': state
+        }
+    
+    progress_bar.empty()
+    progress_text.empty()
+    
+    # Map coordinates back to dataframe
+    df_geo['latitude'] = df_geo['Ship Zip'].map(lambda x: zip_coords.get(x, {}).get('latitude'))
+    df_geo['longitude'] = df_geo['Ship Zip'].map(lambda x: zip_coords.get(x, {}).get('longitude'))
+    df_geo['geo_city'] = df_geo['Ship Zip'].map(lambda x: zip_coords.get(x, {}).get('geo_city'))
+    df_geo['geo_state'] = df_geo['Ship Zip'].map(lambda x: zip_coords.get(x, {}).get('geo_state'))
+    
+    return df_geo
+
+def create_map_visualization(df_with_coords):
+    """Create an interactive map showing revenue by zip code"""
+    # Filter out rows without coordinates
+    map_data = df_with_coords.dropna(subset=['latitude', 'longitude'])
+    
+    if map_data.empty:
+        st.warning("No valid coordinates found for mapping.")
+        return None
+    
+    # Aggregate data by zip code
+    zip_summary = map_data.groupby(['Ship Zip', 'latitude', 'longitude', 'geo_city', 'geo_state']).agg({
+        'Amount': ['sum', 'count', 'mean']
+    }).round(2)
+    
+    zip_summary.columns = ['Total_Amount', 'Transaction_Count', 'Avg_Amount']
+    zip_summary = zip_summary.reset_index()
+    
+    # Create hover text
+    zip_summary['hover_text'] = (
+        "Zip: " + zip_summary['Ship Zip'].astype(str) + "<br>" +
+        "City: " + zip_summary['geo_city'].astype(str) + "<br>" +
+        "State: " + zip_summary['geo_state'].astype(str) + "<br>" +
+        "Total Amount: $" + zip_summary['Total_Amount'].apply(lambda x: f"{x:,.2f}") + "<br>" +
+        "Transactions: " + zip_summary['Transaction_Count'].astype(str) + "<br>" +
+        "Avg Amount: $" + zip_summary['Avg_Amount'].apply(lambda x: f"{x:,.2f}")
+    )
+    
+    # Create the map
+    fig = px.scatter_mapbox(
+        zip_summary,
+        lat='latitude',
+        lon='longitude',
+        size='Total_Amount',
+        color='Total_Amount',
+        hover_data=['Ship Zip', 'geo_city', 'geo_state'],
+        size_max=25,
+        zoom=3,
+        mapbox_style='open-street-map',
+        title='Revenue Distribution by Zip Code',
+        labels={'Total_Amount': 'Total Revenue'},
+        color_continuous_scale='Viridis'
+    )
+    
+    # Update hover template
+    fig.update_traces(
+        hovertemplate=zip_summary['hover_text'] + "<extra></extra>"
+    )
+    
+    fig.update_layout(
+        height=600,
+        mapbox_style="open-street-map"
+    )
+    
+    return fig
 
 if __name__ == "__main__":
     main()
