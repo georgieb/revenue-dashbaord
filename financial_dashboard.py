@@ -1053,10 +1053,11 @@ def main():
                 }), use_container_width=True)
                 
                 # Basic zip code bar chart
+                n_items = min(10, len(zip_revenue))
                 fig_zip = px.bar(
-                    x=zip_revenue.index[:10],
-                    y=zip_revenue['Total Revenue'][:10],
-                    title="Top 10 Zip Codes by Revenue",
+                    x=zip_revenue.index[:n_items],
+                    y=zip_revenue['Total Revenue'][:n_items],
+                    title=f"Top {n_items} Zip Codes by Revenue",
                     labels={'x': 'Zip Code', 'y': 'Total Revenue'}
                 )
                 st.plotly_chart(fig_zip, use_container_width=True)
